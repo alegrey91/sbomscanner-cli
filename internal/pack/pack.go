@@ -9,7 +9,10 @@
 //  3. Build an OCI 1.1 manifest with an empty config blob and the DB
 //     artifactType.
 //  4. Push blobs + manifest into the local OCI layout at ~/.sbomscanner/layout/
-//     and tag it as both `sbomscanner-db_<UTC YYYYMMDD-HHMMSS>` and `latest`.
+//     and tag it as both `sbomscanner-db_<12-hex content hash>` and `latest`.
+//     The tag is derived from the KEV+EPSS content digests and the manifest's
+//     created annotation is pinned to the Unix epoch, so identical input files
+//     always repack to a byte-identical, same-named artifact (reproducible).
 package pack
 
 import (
@@ -21,7 +24,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"time"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	oras "oras.land/oras-go/v2"
@@ -32,11 +34,17 @@ import (
 
 // Media types used by the DB artifact.
 const (
-	ArtifactType    = "application/vnd.sbomscanner.db.v1+json"
-	KEVLayerMedia   = "application/vnd.sbomscanner.kev.v1+csv"
-	EPSSLayerMedia  = "application/vnd.sbomscanner.epss.v1+csv"
-	LatestTag       = "latest"
-	tagTimestampFmt = "20060102-150405" // Go reference time, UTC
+	ArtifactType   = "application/vnd.sbomscanner.db.v1+json"
+	KEVLayerMedia  = "application/vnd.sbomscanner.kev.v1+csv"
+	EPSSLayerMedia = "application/vnd.sbomscanner.epss.v1+csv"
+	LatestTag      = "latest"
+
+	// epochCreated pins the manifest's created annotation to the Unix epoch so
+	// identical input files yield a byte-identical manifest (SOURCE_DATE_EPOCH
+	// convention). A wall-clock time here would change the manifest digest on
+	// every run and defeat the content-addressed tag. Build provenance instead
+	// comes from the registry's push metadata.
+	epochCreated = "1970-01-01T00:00:00Z"
 )
 
 // Usage prints the help text.
@@ -48,7 +56,7 @@ Reads:
   ~/.sbomscanner/data/%s
 
 Produces (in ~/.sbomscanner/layout/):
-  tag sbomscanner-db_<YYYYMMDD-HHMMSS UTC>
+  tag sbomscanner-db_<12-hex content hash>
   tag latest
 
 Both KEV and EPSS must be present in the data directory.
@@ -112,9 +120,6 @@ func Run(ctx context.Context, args []string) error {
 		return fmt.Errorf("push empty config: %w", err)
 	}
 
-	// UTC timestamp for both the tag suffix and the manifest annotation.
-	now := time.Now().UTC()
-
 	manifestDesc, err := oras.PackManifest(
 		ctx,
 		store,
@@ -124,7 +129,9 @@ func Run(ctx context.Context, args []string) error {
 			Layers:           []ocispec.Descriptor{kevDesc, epssDesc},
 			ConfigDescriptor: &emptyDesc,
 			ManifestAnnotations: map[string]string{
-				ocispec.AnnotationCreated: now.Format(time.RFC3339),
+				// Pinned (not time.Now) so the manifest is reproducible; oras
+				// honors a caller-provided created annotation.
+				ocispec.AnnotationCreated: epochCreated,
 			},
 		},
 	)
@@ -132,17 +139,19 @@ func Run(ctx context.Context, args []string) error {
 		return fmt.Errorf("pack manifest: %w", err)
 	}
 
-	timestampTag := "sbomscanner-db_" + now.Format(tagTimestampFmt)
+	// Tag from the layer content digests so unchanged files repack to the same
+	// name. kevDesc/epssDesc.Digest are each sha256(file content).
+	contentTagName := contentTag(kevDesc.Digest, epssDesc.Digest)
 
-	if err := store.Tag(ctx, manifestDesc, timestampTag); err != nil {
-		return fmt.Errorf("tag %s: %w", timestampTag, err)
+	if err := store.Tag(ctx, manifestDesc, contentTagName); err != nil {
+		return fmt.Errorf("tag %s: %w", contentTagName, err)
 	}
 	if err := store.Tag(ctx, manifestDesc, LatestTag); err != nil {
 		return fmt.Errorf("tag %s: %w", LatestTag, err)
 	}
 
 	fmt.Printf("packed %s (%s)\n", manifestDesc.Digest, manifestDesc.MediaType)
-	fmt.Printf("  tag: %s\n", timestampTag)
+	fmt.Printf("  tag: %s\n", contentTagName)
 	fmt.Printf("  tag: %s\n", LatestTag)
 	return nil
 }

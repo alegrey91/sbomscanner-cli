@@ -1,6 +1,8 @@
 package pack
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"hash"
 	"io"
@@ -8,6 +10,21 @@ import (
 	"github.com/opencontainers/go-digest"
 	"oras.land/oras-go/v2/errdef"
 )
+
+// TagPrefix is prepended to the content-derived hash to form the artifact tag.
+const TagPrefix = "sbomscanner-db_"
+
+// contentTag derives the artifact tag from the content of both layers.
+//
+// Each layer descriptor's Digest is already sha256(file content), so hashing
+// the two canonical digest strings (in fixed KEV, EPSS order) yields a stable
+// identifier: identical input files always produce the same tag, making the
+// pack reproducible. The digest is truncated to 12 hex chars (git-style short
+// hash) — collision risk is negligible for this dataset.
+func contentTag(kev, epss digest.Digest) string {
+	sum := sha256.Sum256([]byte(kev.String() + "\n" + epss.String()))
+	return TagPrefix + hex.EncodeToString(sum[:])[:12]
+}
 
 // digestWriter is a tiny wrapper that turns a digest.Digester into an
 // io.Writer suitable for io.Copy. digest.Digester expects callers to write to
