@@ -20,15 +20,14 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
 	"time"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/urfave/cli/v3"
 	oras "oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content/oci"
 	"oras.land/oras-go/v2/errdef"
@@ -43,54 +42,41 @@ import (
 
 const userAgent = "sbomscanner-cli"
 
-// Usage prints the help text.
-func Usage(w io.Writer) {
-	fmt.Fprintf(w, `Usage: sbomscanner-cli push [flags] <registry>/<repo>:<tag>
-
-Pushes an artifact from the local OCI layout (~/.sbomscanner/layout/) to a
-remote registry.
-
-Flags:
-  --skip-tls-verify   skip TLS certificate verification
-  --source-tag TAG    local tag to read (default: destination tag)
-  --plain-http        use HTTP instead of HTTPS
-
-Auth: reads ~/.docker/config.json (or $DOCKER_CONFIG/config.json).
-The config file must exist.
-`)
+// Command builds the `push` command.
+func Command() *cli.Command {
+	return &cli.Command{
+		Name:      "push",
+		Usage:     "Push a packed artifact from the local layout to a registry",
+		ArgsUsage: "<registry>/<repo>:<tag>",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "skip-tls-verify", Usage: "skip TLS certificate verification"},
+			&cli.BoolFlag{Name: "plain-http", Usage: "use HTTP instead of HTTPS"},
+			&cli.StringFlag{Name: "source-tag", Usage: "local tag to push (default: destination tag)"},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if cmd.Args().Len() != 1 {
+				fmt.Fprintln(os.Stderr, "push: exactly one destination reference is required")
+				return cli.Exit("", 2)
+			}
+			if err := run(ctx, cmd.Args().First(), cmd.Bool("skip-tls-verify"), cmd.Bool("plain-http"), cmd.String("source-tag")); err != nil {
+				return cli.Exit("error: "+err.Error(), 1)
+			}
+			return nil
+		},
+	}
 }
 
-// ErrUsage — mirrored across subpackages so main can map to exit 2.
-var ErrUsage = errors.New("usage error")
-
-// Run executes `push`. args is os.Args[2:].
-func Run(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("push", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	fs.Usage = func() { Usage(os.Stderr) }
-
-	skipTLS := fs.Bool("skip-tls-verify", false, "skip TLS certificate verification")
-	plainHTTP := fs.Bool("plain-http", false, "use HTTP instead of HTTPS")
-	sourceTag := fs.String("source-tag", "", "local tag to push (default: destination tag)")
-
-	if err := fs.Parse(args); err != nil {
-		return ErrUsage
-	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "push: exactly one destination reference is required")
-		Usage(os.Stderr)
-		return ErrUsage
-	}
-
-	dstRef, err := registry.ParseReference(fs.Arg(0))
+// run executes `push` against the given destination reference and flags.
+func run(ctx context.Context, ref string, skipTLS, plainHTTP bool, sourceTag string) error {
+	dstRef, err := registry.ParseReference(ref)
 	if err != nil {
-		return fmt.Errorf("push: parse reference %q: %w", fs.Arg(0), err)
+		return fmt.Errorf("push: parse reference %q: %w", ref, err)
 	}
 	if err := dstRef.ValidateReferenceAsTag(); err != nil {
 		return fmt.Errorf("push: destination must be a tag reference (not a digest): %w", err)
 	}
 
-	srcTag := *sourceTag
+	srcTag := sourceTag
 	if srcTag == "" {
 		srcTag = dstRef.Reference
 	}
@@ -133,8 +119,8 @@ func Run(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("push: build remote client: %w", err)
 	}
-	repo.PlainHTTP = *plainHTTP
-	repo.Client = buildAuthClient(credStore, *skipTLS)
+	repo.PlainHTTP = plainHTTP
+	repo.Client = buildAuthClient(credStore, skipTLS)
 
 	// oras.Copy resolves srcTag in the source, walks the graph, and pushes
 	// missing blobs/manifests to the destination, tagging with dstRef.Reference

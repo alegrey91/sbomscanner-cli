@@ -19,7 +19,6 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -30,6 +29,7 @@ import (
 	"time"
 
 	"github.com/schollz/progressbar/v3"
+	"github.com/urfave/cli/v3"
 
 	"github.com/sbomscanner/sbomscanner-cli/internal/paths"
 )
@@ -46,70 +46,60 @@ const (
 	responseHeaderTimeout = 30 * time.Second
 )
 
-// Usage returned for `get` with no subcommand or -h.
-func Usage(w io.Writer) {
-	fmt.Fprintf(w, `Usage: sbomscanner-cli get <subcommand>
-
-Subcommands:
-  all    Download KEV then EPSS (sequential).
-  kev    Download KEV only.
-  epss   Download EPSS only (gunzip'd on the fly).
-
-Files are stored under ~/.sbomscanner/data/ (dir 0700, files 0600):
-  %s
-  %s
-`, paths.KEVFileName, paths.EPSSFileName)
+// Command builds the `get` command and its all/kev/epss subcommands. Each
+// subcommand ensures the data directory exists, then runs its downloader.
+func Command() *cli.Command {
+	return &cli.Command{
+		Name:  "get",
+		Usage: "Download KEV/EPSS data files into ~/.sbomscanner/data/",
+		// With subcommands present, an unknown or missing subcommand falls
+		// through to this Action; we turn that into a usage error (exit 2).
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			if cmd.Args().Present() {
+				fmt.Fprintf(os.Stderr, "get: unknown subcommand %q\n", cmd.Args().First())
+			}
+			_ = cli.ShowSubcommandHelp(cmd)
+			return cli.Exit("", 2)
+		},
+		Commands: []*cli.Command{
+			{
+				Name:   "all",
+				Usage:  "Download KEV then EPSS (sequential)",
+				Action: withDataDir(runAll),
+			},
+			{
+				Name:   "kev",
+				Usage:  "Download KEV only",
+				Action: withDataDir(runKEV),
+			},
+			{
+				Name:   "epss",
+				Usage:  "Download EPSS only (gunzip'd on the fly)",
+				Action: withDataDir(runEPSS),
+			},
+		},
+	}
 }
 
-// Run dispatches the get subcommand. args is os.Args[2:] (i.e. after "get").
-func Run(ctx context.Context, args []string) error {
-	if len(args) == 0 {
-		Usage(os.Stderr)
-		// The main binary translates ErrUsage to exit code 2.
-		return ErrUsage
-	}
-
-	sub := args[0]
-	rest := args[1:]
-
-	// Per-subcommand flag set. We give each one -h/--help.
-	fs := flag.NewFlagSet("get "+sub, flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	fs.Usage = func() { Usage(os.Stderr) }
-
-	if err := fs.Parse(rest); err != nil {
-		// flag prints its own error; treat as usage.
-		return ErrUsage
-	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "get %s: unexpected arguments: %v\n", sub, fs.Args())
-		return ErrUsage
-	}
-
-	dataDir, err := paths.EnsureDataDir()
-	if err != nil {
-		return err
-	}
-
-	switch sub {
-	case "all":
-		return runAll(ctx, dataDir)
-	case "kev":
-		return runKEV(ctx, dataDir)
-	case "epss":
-		return runEPSS(ctx, dataDir)
-	case "-h", "--help", "help":
-		Usage(os.Stdout)
+// withDataDir adapts a downloader (ctx, dataDir) into a cli.ActionFunc: it
+// rejects stray positional args, ensures the data directory, then runs the
+// downloader, mapping any failure to exit code 1.
+func withDataDir(run func(context.Context, string) error) cli.ActionFunc {
+	return func(ctx context.Context, cmd *cli.Command) error {
+		if cmd.Args().Present() {
+			fmt.Fprintf(os.Stderr, "get %s: unexpected arguments: %v\n", cmd.Name, cmd.Args().Slice())
+			return cli.Exit("", 2)
+		}
+		dataDir, err := paths.EnsureDataDir()
+		if err != nil {
+			return cli.Exit("error: "+err.Error(), 1)
+		}
+		if err := run(ctx, dataDir); err != nil {
+			return cli.Exit("error: "+err.Error(), 1)
+		}
 		return nil
-	default:
-		fmt.Fprintf(os.Stderr, "get: unknown subcommand %q\n", sub)
-		Usage(os.Stderr)
-		return ErrUsage
 	}
 }
-
-// ErrUsage signals a usage error; the top-level binary maps it to exit 2.
-var ErrUsage = errors.New("usage error")
 
 // runAll downloads KEV then EPSS. Partial success (KEV ok, EPSS fails) is
 // preserved on disk per the spec; we only report the failure and exit non-zero.

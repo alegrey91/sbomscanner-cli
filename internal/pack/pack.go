@@ -18,14 +18,13 @@ package pack
 import (
 	"bytes"
 	"context"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/urfave/cli/v3"
 	oras "oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content/oci"
 
@@ -47,35 +46,26 @@ const (
 	epochCreated = "1970-01-01T00:00:00Z"
 )
 
-// Usage prints the help text.
-func Usage(w io.Writer) {
-	fmt.Fprintf(w, `Usage: sbomscanner-cli pack
-
-Reads:
-  ~/.sbomscanner/data/%s
-  ~/.sbomscanner/data/%s
-
-Produces (in ~/.sbomscanner/layout/):
-  tag sbomscanner-db_<12-hex content hash>
-  tag latest
-
-Both KEV and EPSS must be present in the data directory.
-`, paths.KEVFileName, paths.EPSSFileName)
+// Command builds the `pack` command.
+func Command() *cli.Command {
+	return &cli.Command{
+		Name:  "pack",
+		Usage: "Pack KEV+EPSS into an OCI artifact in the local layout",
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if cmd.Args().Present() {
+				fmt.Fprintf(os.Stderr, "pack: unexpected arguments: %v\n", cmd.Args().Slice())
+				return cli.Exit("", 2)
+			}
+			if err := run(ctx); err != nil {
+				return cli.Exit("error: "+err.Error(), 1)
+			}
+			return nil
+		},
+	}
 }
 
-// Run executes `pack`. args is os.Args[2:].
-func Run(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("pack", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	fs.Usage = func() { Usage(os.Stderr) }
-	if err := fs.Parse(args); err != nil {
-		return ErrUsage
-	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "pack: unexpected arguments: %v\n", fs.Args())
-		return ErrUsage
-	}
-
+// run executes `pack`.
+func run(ctx context.Context) error {
 	dataDir, err := paths.DataDir()
 	if err != nil {
 		return err
@@ -155,9 +145,6 @@ func Run(ctx context.Context, args []string) error {
 	fmt.Printf("  tag: %s\n", LatestTag)
 	return nil
 }
-
-// ErrUsage — mirrored across subpackages so main can map to exit 2.
-var ErrUsage = errors.New("usage error")
 
 // pushFileAsLayer streams file at path into the store as a blob with the given
 // media type. Adds an image.title annotation so `oras manifest fetch` prints
