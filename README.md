@@ -55,10 +55,11 @@ files are not versioned upstream, so every run re-downloads and overwrites the
 previous copies (force download is implicit). A progress bar is shown while
 downloading.
 
-- `get all`: download **both** files sequentially (KEV first, then EPSS).
+- `get all`: download **all** files sequentially (KEV first, then EPSS, then GTFOBins).
 - `get kev`: download only the KEV catalog.
 - `get epss`: download only the EPSS scores (the source is gzipped and is
   decompressed before being stored).
+- `get gtfobins`: download only the GTFOBins data (`gtfobins.json`).
 
 Running `get` with no subcommand prints usage and exits `2`.
 
