@@ -14,15 +14,15 @@ import (
 // TagPrefix is prepended to the content-derived hash to form the artifact tag.
 const TagPrefix = "sbomscanner-db_"
 
-// contentTag derives the artifact tag from the content of both layers.
+// contentTag derives the artifact tag from the content of all layers.
 //
 // Each layer descriptor's Digest is already sha256(file content), so hashing
-// the two canonical digest strings (in fixed KEV, EPSS order) yields a stable
-// identifier: identical input files always produce the same tag, making the
-// pack reproducible. The digest is truncated to 12 hex chars (git-style short
-// hash) — collision risk is negligible for this dataset.
-func contentTag(kev, epss digest.Digest) string {
-	sum := sha256.Sum256([]byte(kev.String() + "\n" + epss.String()))
+// the canonical digest strings (in fixed KEV, EPSS, GTFOBins order) yields a
+// stable identifier: identical input files always produce the same tag, making
+// the pack reproducible. The digest is truncated to 12 hex chars (git-style
+// short hash) — collision risk is negligible for this dataset.
+func contentTag(kev, epss, gtfobins digest.Digest) string {
+	sum := sha256.Sum256([]byte(kev.String() + "\n" + epss.String() + "\n" + gtfobins.String()))
 	return TagPrefix + hex.EncodeToString(sum[:])[:12]
 }
 

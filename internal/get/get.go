@@ -2,10 +2,11 @@
 //
 // Subcommands:
 //
-//	get all   -- KEV then EPSS, sequentially. Partial success is preserved:
-//	             if KEV succeeds and EPSS fails, the fresh KEV is kept on disk.
-//	get kev   -- KEV only
-//	get epss  -- EPSS only (gunzip'd before rename)
+//	get all      -- KEV then EPSS then GTFOBins, sequentially. Partial success is
+//	                preserved: each file that downloads successfully is kept on disk.
+//	get kev      -- KEV only
+//	get epss     -- EPSS only (gunzip'd before rename)
+//	get gtfobins -- GTFOBins only
 //
 // All writes are atomic: bytes stream to a per-pid ".tmp.<pid>" sibling and
 // rename into place on success. On any failure (HTTP error, gunzip error,
@@ -35,8 +36,9 @@ import (
 )
 
 const (
-	kevURL  = "https://www.cisa.gov/sites/default/files/csv/known_exploited_vulnerabilities.csv"
-	epssURL = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
+	kevURL      = "https://www.cisa.gov/sites/default/files/csv/known_exploited_vulnerabilities.csv"
+	epssURL     = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
+	gtfobinsURL = "https://gtfobins.org/api.json"
 
 	userAgent = "sbomscanner-cli"
 
@@ -51,7 +53,7 @@ const (
 func Command() *cli.Command {
 	return &cli.Command{
 		Name:  "get",
-		Usage: "Download KEV/EPSS data files into ~/.sbomscanner/data/",
+		Usage: "Download KEV/EPSS/GTFOBins data files into ~/.sbomscanner/data/",
 		// With subcommands present, an unknown or missing subcommand falls
 		// through to this Action; we turn that into a usage error (exit 2).
 		Action: func(_ context.Context, cmd *cli.Command) error {
@@ -64,7 +66,7 @@ func Command() *cli.Command {
 		Commands: []*cli.Command{
 			{
 				Name:   "all",
-				Usage:  "Download KEV then EPSS (sequential)",
+				Usage:  "Download KEV then EPSS then GTFOBins (sequential)",
 				Action: withDataDir(runAll),
 			},
 			{
@@ -76,6 +78,11 @@ func Command() *cli.Command {
 				Name:   "epss",
 				Usage:  "Download EPSS only (gunzip'd on the fly)",
 				Action: withDataDir(runEPSS),
+			},
+			{
+				Name:   "gtfobins",
+				Usage:  "Download GTFOBins only",
+				Action: withDataDir(runGTFOBins),
 			},
 		},
 	}
@@ -104,7 +111,7 @@ func withDataDir(run func(context.Context, string) error) cli.ActionFunc {
 // runAll downloads KEV then EPSS. Partial success (KEV ok, EPSS fails) is
 // preserved on disk per the spec; we only report the failure and exit non-zero.
 func runAll(ctx context.Context, dataDir string) error {
-	var kevErr, epssErr error
+	var kevErr, epssErr, gtfobinsErr error
 
 	if err := downloadKEV(ctx, dataDir); err != nil {
 		kevErr = err
@@ -116,11 +123,16 @@ func runAll(ctx context.Context, dataDir string) error {
 		epssErr = err
 		fmt.Fprintf(os.Stderr, "get all: EPSS failed: %v\n", err)
 	}
+	if err := downloadGTFOBins(ctx, dataDir); err != nil {
+		gtfobinsErr = err
+		fmt.Fprintf(os.Stderr, "get all: GTFOBins failed: %v\n", err)
+	}
 
 	// Verify both files exist and are non-empty. This is the source of truth
 	// for the exit code — download-time errors are printed above.
 	kevMissing := verifyFile(filepath.Join(dataDir, paths.KEVFileName)) != nil
 	epssMissing := verifyFile(filepath.Join(dataDir, paths.EPSSFileName)) != nil
+	gtfobinsMissing := verifyFile(filepath.Join(dataDir, paths.GTFOBinsFileName)) != nil
 
 	if kevMissing {
 		fmt.Fprintf(os.Stderr, "get all: %s is missing or empty\n", paths.KEVFileName)
@@ -128,8 +140,11 @@ func runAll(ctx context.Context, dataDir string) error {
 	if epssMissing {
 		fmt.Fprintf(os.Stderr, "get all: %s is missing or empty\n", paths.EPSSFileName)
 	}
+	if gtfobinsMissing {
+		fmt.Fprintf(os.Stderr, "get all: %s is missing or empty\n", paths.GTFOBinsFileName)
+	}
 
-	if kevErr != nil || epssErr != nil || kevMissing || epssMissing {
+	if kevErr != nil || epssErr != nil || gtfobinsErr != nil || kevMissing || epssMissing || gtfobinsMissing {
 		return errors.New("one or more downloads failed")
 	}
 	return nil
@@ -159,6 +174,18 @@ func runEPSS(ctx context.Context, dataDir string) error {
 	return nil
 }
 
+func runGTFOBins(ctx context.Context, dataDir string) error {
+	if err := downloadGTFOBins(ctx, dataDir); err != nil {
+		return err
+	}
+	dst := filepath.Join(dataDir, paths.GTFOBinsFileName)
+	if err := verifyFile(dst); err != nil {
+		fmt.Fprintf(os.Stderr, "get gtfobins: %s: %v\n", paths.GTFOBinsFileName, err)
+		return err
+	}
+	return nil
+}
+
 // downloadKEV: plain CSV, write directly.
 func downloadKEV(ctx context.Context, dataDir string) error {
 	dst := filepath.Join(dataDir, paths.KEVFileName)
@@ -178,6 +205,17 @@ func downloadEPSS(ctx context.Context, dataDir string) error {
 		return fmt.Errorf("download EPSS: %w", err)
 	}
 	fmt.Printf("%s (%d bytes)\n", paths.EPSSFileName, size)
+	return nil
+}
+
+// downloadGTFOBins: plain JSON, write directly.
+func downloadGTFOBins(ctx context.Context, dataDir string) error {
+	dst := filepath.Join(dataDir, paths.GTFOBinsFileName)
+	size, err := downloadTo(ctx, gtfobinsURL, dst, false)
+	if err != nil {
+		return fmt.Errorf("download GTFOBins: %w", err)
+	}
+	fmt.Printf("%s (%d bytes)\n", paths.GTFOBinsFileName, size)
 	return nil
 }
 

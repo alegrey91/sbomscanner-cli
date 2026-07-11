@@ -2,17 +2,18 @@
 //
 // Behavior:
 //
-//  1. Read ~/.sbomscanner/data/ and require both KEV and EPSS to be present.
-//     Any other file in that directory is ignored.
-//  2. Build two layers in fixed order (KEV first, EPSS second) using the
+//  1. Read ~/.sbomscanner/data/ and require KEV, EPSS, and GTFOBins to all be
+//     present. Any other file in that directory is ignored.
+//  2. Build three layers in fixed order (KEV, EPSS, GTFOBins) using the
 //     configured artifactType-per-layer.
 //  3. Build an OCI 1.1 manifest with an empty config blob and the DB
 //     artifactType.
 //  4. Push blobs + manifest into the local OCI layout at ~/.sbomscanner/layout/
 //     and tag it as both `sbomscanner-db_<12-hex content hash>` and `latest`.
-//     The tag is derived from the KEV+EPSS content digests and the manifest's
-//     created annotation is pinned to the Unix epoch, so identical input files
-//     always repack to a byte-identical, same-named artifact (reproducible).
+//     The tag is derived from the KEV+EPSS+GTFOBins content digests and the
+//     manifest's created annotation is pinned to the Unix epoch, so identical
+//     input files always repack to a byte-identical, same-named artifact
+//     (reproducible).
 package pack
 
 import (
@@ -33,10 +34,11 @@ import (
 
 // Media types used by the DB artifact.
 const (
-	ArtifactType   = "application/vnd.sbomscanner.db.v1+json"
-	KEVLayerMedia  = "application/vnd.sbomscanner.kev.v1+csv"
-	EPSSLayerMedia = "application/vnd.sbomscanner.epss.v1+csv"
-	LatestTag      = "latest"
+	ArtifactType       = "application/vnd.sbomscanner.db.v1+json"
+	KEVLayerMedia      = "application/vnd.sbomscanner.kev.v1+csv"
+	EPSSLayerMedia     = "application/vnd.sbomscanner.epss.v1+csv"
+	GTFOBinsLayerMedia = "application/vnd.sbomscanner.gtfobins.v1+json"
+	LatestTag          = "latest"
 
 	// epochCreated pins the manifest's created annotation to the Unix epoch so
 	// identical input files yield a byte-identical manifest (SOURCE_DATE_EPOCH
@@ -74,11 +76,15 @@ func run(ctx context.Context) error {
 	// Extra files in the directory are ignored per the spec.
 	kevPath := filepath.Join(dataDir, paths.KEVFileName)
 	epssPath := filepath.Join(dataDir, paths.EPSSFileName)
+	gtfobinsPath := filepath.Join(dataDir, paths.GTFOBinsFileName)
 	if err := mustExistNonEmpty(kevPath); err != nil {
 		return fmt.Errorf("pack: KEV precondition: %w", err)
 	}
 	if err := mustExistNonEmpty(epssPath); err != nil {
 		return fmt.Errorf("pack: EPSS precondition: %w", err)
+	}
+	if err := mustExistNonEmpty(gtfobinsPath); err != nil {
+		return fmt.Errorf("pack: GTFOBins precondition: %w", err)
 	}
 
 	layoutDir, err := paths.EnsureLayoutDir()
@@ -102,6 +108,10 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("push EPSS layer: %w", err)
 	}
+	gtfobinsDesc, err := pushFileAsLayer(ctx, store, gtfobinsPath, GTFOBinsLayerMedia)
+	if err != nil {
+		return fmt.Errorf("push GTFOBins layer: %w", err)
+	}
 
 	// Empty config blob — the DB artifactType lives on the manifest itself
 	// (OCI 1.1 style), not on the config media type.
@@ -116,7 +126,7 @@ func run(ctx context.Context) error {
 		oras.PackManifestVersion1_1,
 		ArtifactType,
 		oras.PackManifestOptions{
-			Layers:           []ocispec.Descriptor{kevDesc, epssDesc},
+			Layers:           []ocispec.Descriptor{kevDesc, epssDesc, gtfobinsDesc},
 			ConfigDescriptor: &emptyDesc,
 			ManifestAnnotations: map[string]string{
 				// Pinned (not time.Now) so the manifest is reproducible; oras
@@ -130,8 +140,8 @@ func run(ctx context.Context) error {
 	}
 
 	// Tag from the layer content digests so unchanged files repack to the same
-	// name. kevDesc/epssDesc.Digest are each sha256(file content).
-	contentTagName := contentTag(kevDesc.Digest, epssDesc.Digest)
+	// name. Descriptor digests are each sha256(file content).
+	contentTagName := contentTag(kevDesc.Digest, epssDesc.Digest, gtfobinsDesc.Digest)
 
 	if err := store.Tag(ctx, manifestDesc, contentTagName); err != nil {
 		return fmt.Errorf("tag %s: %w", contentTagName, err)

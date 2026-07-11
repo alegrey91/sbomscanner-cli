@@ -16,8 +16,9 @@ import (
 // File names for the two known data files. Anything else in the data dir
 // is ignored by `pack`.
 const (
-	KEVFileName  = "known_exploited_vulnerabilities.csv"
-	EPSSFileName = "epss_scores.csv"
+	KEVFileName      = "known_exploited_vulnerabilities.csv"
+	EPSSFileName     = "epss_scores.csv"
+	GTFOBinsFileName = "gtfobins.json"
 )
 
 // Directory permissions (0700) and file permissions (0600) required by the
