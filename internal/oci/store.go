@@ -35,8 +35,8 @@ func NewDefaultStore(logger *slog.Logger) (*Store, error) {
 
 // List returns the tagged artifacts in the store, in index order.
 // A missing store yields an empty list.
-func (store *Store) List() ([]Artifact, error) {
-	indexPath := filepath.Join(store.dir, "index.json")
+func (s *Store) List() ([]Artifact, error) {
+	indexPath := filepath.Join(s.dir, "index.json")
 	data, err := os.ReadFile(indexPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -67,13 +67,13 @@ func (store *Store) List() ([]Artifact, error) {
 }
 
 // open opens (creating if needed) the OCI image layout backing the store.
-func (store *Store) open() (*orasoci.Store, error) {
-	if err := os.MkdirAll(store.dir, 0o700); err != nil {
-		return nil, fmt.Errorf("create store directory %s: %w", store.dir, err)
+func (s *Store) open() (*orasoci.Store, error) {
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create store directory %s: %w", s.dir, err)
 	}
-	layout, err := orasoci.New(store.dir)
+	layout, err := orasoci.New(s.dir)
 	if err != nil {
-		return nil, fmt.Errorf("open store %s: %w", store.dir, err)
+		return nil, fmt.Errorf("open store %s: %w", s.dir, err)
 	}
 	return layout, nil
 }

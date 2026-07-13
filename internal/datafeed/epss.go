@@ -143,10 +143,10 @@ func NewEPSSDownloader(httpDownloader *HTTPDownloader, logger *slog.Logger) *EPS
 
 // Download fetches the EPSS scores (gzipped CSV, decompressed on the fly)
 // into dir/EPSSFileName and validates that it parses as a usable feed.
-func (downloader *EPSSDownloader) Download(ctx context.Context, dir string) error {
+func (d *EPSSDownloader) Download(ctx context.Context, dir string) error {
 	dst := filepath.Join(dir, EPSSFileName)
-	downloader.logger.InfoContext(ctx, "downloading EPSS scores", "url", downloader.url)
-	size, err := downloader.http.Download(ctx, downloader.url, dst)
+	d.logger.InfoContext(ctx, "downloading EPSS scores", "url", d.url)
+	size, err := d.http.Download(ctx, d.url, dst)
 	if err != nil {
 		return fmt.Errorf("download EPSS: %w", err)
 	}
@@ -156,7 +156,7 @@ func (downloader *EPSSDownloader) Download(ctx context.Context, dir string) erro
 		return fmt.Errorf("validate EPSS: %w", err)
 	}
 
-	downloader.logger.InfoContext(ctx, "downloaded EPSS scores", "file", EPSSFileName, "bytes", size, "rows", len(scores.Scores), "modelVersion", scores.ModelVersion)
+	d.logger.InfoContext(ctx, "downloaded EPSS scores", "file", EPSSFileName, "bytes", size, "rows", len(scores.Scores), "modelVersion", scores.ModelVersion)
 	return nil
 }
 

@@ -79,10 +79,10 @@ func NewKEVDownloader(httpDownloader *HTTPDownloader, logger *slog.Logger) *KEVD
 
 // Download fetches the KEV catalog (JSON) into dir/KEVFileName
 // and validates that it parses as a usable catalog.
-func (downloader *KEVDownloader) Download(ctx context.Context, dir string) error {
+func (d *KEVDownloader) Download(ctx context.Context, dir string) error {
 	dst := filepath.Join(dir, KEVFileName)
-	downloader.logger.InfoContext(ctx, "downloading KEV catalog", "url", downloader.url)
-	size, err := downloader.http.Download(ctx, downloader.url, dst)
+	d.logger.InfoContext(ctx, "downloading KEV catalog", "url", d.url)
+	size, err := d.http.Download(ctx, d.url, dst)
 	if err != nil {
 		return fmt.Errorf("download KEV: %w", err)
 	}
@@ -92,7 +92,7 @@ func (downloader *KEVDownloader) Download(ctx context.Context, dir string) error
 		return fmt.Errorf("validate KEV: %w", err)
 	}
 
-	downloader.logger.InfoContext(ctx, "downloaded KEV catalog", "file", KEVFileName, "bytes", size, "entries", len(catalog.Vulnerabilities))
+	d.logger.InfoContext(ctx, "downloaded KEV catalog", "file", KEVFileName, "bytes", size, "entries", len(catalog.Vulnerabilities))
 	return nil
 }
 

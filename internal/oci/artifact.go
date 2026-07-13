@@ -75,13 +75,13 @@ func NewBuilder(store *Store, logger *slog.Logger) *Builder {
 // Keeping one layer per feed means an unchanged feed keeps its blob digest
 // across builds, so registries deduplicate it and consumers can fetch feeds
 // selectively by media type.
-func (builder *Builder) Build(ctx context.Context, ref, dataDir string, layers []Layer) (Artifact, error) {
-	layout, err := builder.store.open()
+func (b *Builder) Build(ctx context.Context, ref, dataDir string, layers []Layer) (Artifact, error) {
+	layout, err := b.store.open()
 	if err != nil {
 		return Artifact{}, err
 	}
 
-	builder.logger.InfoContext(ctx, "packing artifact", "ref", ref, "layers", len(layers))
+	b.logger.InfoContext(ctx, "packing artifact", "ref", ref, "layers", len(layers))
 
 	// Archive each data file into a temp dir before pushing;
 	// descriptors need the final size and digest up front.
@@ -102,7 +102,7 @@ func (builder *Builder) Build(ctx context.Context, ref, dataDir string, layers [
 		if err != nil {
 			return Artifact{}, fmt.Errorf("push layer %s: %w", archiveName, err)
 		}
-		builder.logger.InfoContext(ctx, "packed layer", "file", layer.FileName, "mediaType", layer.MediaType, "digest", desc.Digest, "bytes", desc.Size)
+		b.logger.InfoContext(ctx, "packed layer", "file", layer.FileName, "mediaType", layer.MediaType, "digest", desc.Digest, "bytes", desc.Size)
 		layerDescs = append(layerDescs, desc)
 	}
 
@@ -135,7 +135,7 @@ func (builder *Builder) Build(ctx context.Context, ref, dataDir string, layers [
 	if err := layout.Tag(ctx, manifestDesc, ref); err != nil {
 		return Artifact{}, fmt.Errorf("tag %s: %w", ref, err)
 	}
-	builder.logger.InfoContext(ctx, "tagged artifact", "ref", ref, "digest", manifestDesc.Digest)
+	b.logger.InfoContext(ctx, "tagged artifact", "ref", ref, "digest", manifestDesc.Digest)
 
 	return Artifact{
 		Ref:    ref,

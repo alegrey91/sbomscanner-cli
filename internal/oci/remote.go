@@ -49,7 +49,7 @@ func NewRemote(config Config, logger *slog.Logger) *Remote {
 
 // Push publishes the artifact tagged as ref in the given store
 // to the remote registry identified by the same reference.
-func (remote *Remote) Push(ctx context.Context, store *Store, ref string) (Artifact, error) {
+func (r *Remote) Push(ctx context.Context, store *Store, ref string) (Artifact, error) {
 	dstRef, err := parseTagReference(ref)
 	if err != nil {
 		return Artifact{}, err
@@ -66,7 +66,7 @@ func (remote *Remote) Push(ctx context.Context, store *Store, ref string) (Artif
 		return Artifact{}, fmt.Errorf("resolve %s in local store: %w", ref, err)
 	}
 
-	repo, err := remote.newRepository(dstRef)
+	repo, err := r.newRepository(dstRef)
 	if err != nil {
 		return Artifact{}, err
 	}
@@ -76,11 +76,11 @@ func (remote *Remote) Push(ctx context.Context, store *Store, ref string) (Artif
 	// Progress hooks log each blob/manifest as it lands.
 	copyOpts := oras.DefaultCopyOptions
 	copyOpts.PreCopy = func(_ context.Context, desc ocispec.Descriptor) error {
-		remote.logger.InfoContext(ctx, "pushing blob", "mediaType", desc.MediaType, "digest", desc.Digest, "bytes", desc.Size)
+		r.logger.InfoContext(ctx, "pushing blob", "mediaType", desc.MediaType, "digest", desc.Digest, "bytes", desc.Size)
 		return nil
 	}
 	copyOpts.OnCopySkipped = func(_ context.Context, desc ocispec.Descriptor) error {
-		remote.logger.DebugContext(ctx, "skipped blob, already present", "mediaType", desc.MediaType, "digest", desc.Digest)
+		r.logger.DebugContext(ctx, "skipped blob, already present", "mediaType", desc.MediaType, "digest", desc.Digest)
 		return nil
 	}
 
@@ -88,7 +88,7 @@ func (remote *Remote) Push(ctx context.Context, store *Store, ref string) (Artif
 	if err != nil {
 		return Artifact{}, fmt.Errorf("copy to remote: %w", err)
 	}
-	remote.logger.InfoContext(ctx, "pushed artifact", "ref", dstRef.String(), "digest", pushedDesc.Digest)
+	r.logger.InfoContext(ctx, "pushed artifact", "ref", dstRef.String(), "digest", pushedDesc.Digest)
 
 	return Artifact{
 		Ref:    ref,
@@ -101,25 +101,25 @@ func (remote *Remote) Push(ctx context.Context, store *Store, ref string) (Artif
 // extracts each data layer (a tar.gz), and writes the contained files
 // (e.g. known_exploited_vulnerabilities.json, epss_scores.csv) into outDir.
 // It returns the written file paths in manifest layer order.
-func (remote *Remote) Pull(ctx context.Context, ref, outDir string) ([]string, error) {
+func (r *Remote) Pull(ctx context.Context, ref, outDir string) ([]string, error) {
 	srcRef, err := parseTagReference(ref)
 	if err != nil {
 		return nil, err
 	}
 
-	repo, err := remote.newRepository(srcRef)
+	repo, err := r.newRepository(srcRef)
 	if err != nil {
 		return nil, err
 	}
 
-	layerDescs, err := remote.resolveDataLayers(ctx, repo, srcRef.Reference)
+	layerDescs, err := r.resolveDataLayers(ctx, repo, srcRef.Reference)
 	if err != nil {
 		return nil, err
 	}
 
 	var paths []string
 	for _, layerDesc := range layerDescs {
-		remote.logger.InfoContext(ctx, "pulling data layer", "ref", srcRef.String(), "layer", layerDesc.Annotations[ocispec.AnnotationTitle], "digest", layerDesc.Digest, "bytes", layerDesc.Size)
+		r.logger.InfoContext(ctx, "pulling data layer", "ref", srcRef.String(), "layer", layerDesc.Annotations[ocispec.AnnotationTitle], "digest", layerDesc.Digest, "bytes", layerDesc.Size)
 		extracted, err := fetchAndExtractLayer(ctx, repo, layerDesc, outDir)
 		if err != nil {
 			return nil, err
@@ -131,7 +131,7 @@ func (remote *Remote) Pull(ctx context.Context, ref, outDir string) ([]string, e
 
 // resolveDataLayers fetches the manifest at tag
 // and returns the descriptors of the DB data layers, located by media type.
-func (remote *Remote) resolveDataLayers(ctx context.Context, repo *orasremote.Repository, tag string) ([]ocispec.Descriptor, error) {
+func (r *Remote) resolveDataLayers(ctx context.Context, repo *orasremote.Repository, tag string) ([]ocispec.Descriptor, error) {
 	manifestDesc, manifestBytes, err := oras.FetchBytes(ctx, repo, tag, oras.DefaultFetchBytesOptions)
 	if err != nil {
 		return nil, fmt.Errorf("fetch manifest: %w", err)
@@ -155,7 +155,7 @@ func (remote *Remote) resolveDataLayers(ctx context.Context, repo *orasremote.Re
 }
 
 // newRepository builds an authenticated remote repository client for ref.
-func (remote *Remote) newRepository(ref registry.Reference) (*orasremote.Repository, error) {
+func (r *Remote) newRepository(ref registry.Reference) (*orasremote.Repository, error) {
 	if err := requireDockerConfig(); err != nil {
 		return nil, err
 	}
@@ -168,8 +168,8 @@ func (remote *Remote) newRepository(ref registry.Reference) (*orasremote.Reposit
 	if err != nil {
 		return nil, fmt.Errorf("build remote client: %w", err)
 	}
-	repo.PlainHTTP = remote.config.PlainHTTP
-	repo.Client = buildAuthClient(credStore, remote.config.SkipTLSVerify)
+	repo.PlainHTTP = r.config.PlainHTTP
+	repo.Client = buildAuthClient(credStore, r.config.SkipTLSVerify)
 	return repo, nil
 }
 
