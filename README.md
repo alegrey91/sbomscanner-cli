@@ -49,7 +49,7 @@ on macOS), tagged by reference, and pushed from there.
 | `build` | Downloads the KEV and EPSS data files and builds them into an OCI artifact in the local store, tagged with the given reference. |
 | `list`  | Lists the artifacts in the local store. |
 | `push`  | Pushes a previously built artifact from the local store to its registry. |
-| `pull`  | Pulls the artifact from a registry and writes the `sbomscanner-db.tar.gz` bundle to the current directory. |
+| `pull`  | Pulls the artifact from a registry and writes the KEV and EPSS data files to the current directory. |
 
 `build`, `push`, and `pull` take a single `<registry>/<repo>:<tag>` reference
 (e.g. `ghcr.io/kubewarden/sbomscanner/sbomscannerdb:latest`). `push` and
@@ -62,15 +62,18 @@ on macOS), tagged by reference, and pushed from there.
 ### `build`
 
 Downloads the latest KEV catalog and EPSS scores (the EPSS source is gzipped
-and decompressed on the fly), bundles both data files into a single
-`sbomscanner-db.tar.gz`, packs it as an OCI artifact, and tags it with the
-given reference in the local store. Rebuilding the same reference re-tags it;
-unchanged data is a no-op thanks to content addressing.
+and decompressed on the fly), packs each data file as its own tar.gz OCI
+layer, and tags the artifact with the given reference in the local store.
+Rebuilding the same reference re-tags it; unchanged data is a no-op thanks to
+content addressing. Because each feed is a separate layer, a feed that did not
+change between builds keeps its blob digest, so registries store and transfer
+it only once.
 
 The artifact uses these media / artifact types:
 
 - Artifact: `application/vnd.sbomscanner.db.v1+json`
-- Layer: `application/vnd.sbomscanner.db.layer.v1.tar+gzip`
+- KEV layer: `application/vnd.sbomscanner.db.kev.layer.v1.tar+gzip`
+- EPSS layer: `application/vnd.sbomscanner.db.epss.layer.v1.tar+gzip`
 
 ### `list`
 
@@ -86,9 +89,8 @@ no config file exists the command exits with an error.
 
 ### `pull`
 
-Fetches the artifact manifest from the registry, locates the database layer by
-media type, and writes it as `sbomscanner-db.tar.gz` to the current directory.
-The bundle contains:
+Fetches the artifact manifest from the registry, locates the data layers by
+media type, and extracts each one to the current directory:
 
 - `known_exploited_vulnerabilities.json` (KEV)
 - `epss_scores.csv` (EPSS)
@@ -96,25 +98,33 @@ The bundle contains:
 ## Flow
 
 ```
-  build:  KEV/EPSS feeds ──▶ sbomscanner-db.tar.gz ──▶ local store (tagged)
+  build:  KEV/EPSS feeds ──▶ one tar.gz layer per feed ──▶ local store (tagged)
   push:   local store ──▶ registry
-  pull:   registry ──▶ ./sbomscanner-db.tar.gz
+  pull:   registry ──▶ ./known_exploited_vulnerabilities.json + ./epss_scores.csv
 ```
 
 Once the artifact is in a registry, configure sbomscanner to point at that
 `<registry>/<repo>:<tag>`. sbomscanner will then pull the `sbomscanner-db`
 artifact when it needs the KEV/EPSS data for CVE prioritization.
 
-## Bundle contract
+## Artifact contract
 
 The artifact is an OCI 1.1 image manifest with:
 
 - artifactType: `application/vnd.sbomscanner.db.v1+json`
-- a single layer of media type `application/vnd.sbomscanner.db.layer.v1.tar+gzip`
+- one tar.gz layer per data feed:
+  - `application/vnd.sbomscanner.db.kev.layer.v1.tar+gzip` — `kev.tar.gz`,
+    containing `known_exploited_vulnerabilities.json`
+  - `application/vnd.sbomscanner.db.epss.layer.v1.tar+gzip` — `epss.tar.gz`,
+    containing `epss_scores.csv`
 
-The layer is a tar.gz (`sbomscanner-db.tar.gz`) containing exactly two files,
-each kept verbatim in its upstream native format — no re-encoding is applied,
-so the schemas below are owned by CISA and FIRST respectively:
+Each layer's `org.opencontainers.image.title` annotation carries the archive
+name (`kev.tar.gz`, `epss.tar.gz`). Today each archive holds exactly one file;
+the tar envelope leaves room to ship metadata entries alongside the data file
+in a future layer version. Each data file is kept verbatim in its upstream
+native format — no re-encoding is applied, so the schemas below are owned by
+CISA and FIRST respectively. Consumers that only need one feed can fetch just
+that layer by media type.
 
 ### `known_exploited_vulnerabilities.json` (KEV)
 
