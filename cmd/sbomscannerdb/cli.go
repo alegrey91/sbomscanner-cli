@@ -23,20 +23,24 @@ func rootCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "debug", Usage: "enable debug logging"},
 		},
+		// No-op: errors flow back to run() in main.go instead of os.Exit-ing inside Run.
+		ExitErrHandler: func(context.Context, *cli.Command, error) {},
 		Commands: []*cli.Command{
 			buildCommand(),
 			listCommand(),
 			pushCommand(),
 			pullCommand(),
 		},
-		// Reached only for a bare invocation or an unknown top-level command;
-		// both are usage errors (exit 2).
+		// Reached for a bare invocation (help, exit 0)
+		// or an unknown top-level command (help + error, exit 2).
 		Action: func(_ context.Context, cmd *cli.Command) error {
-			if cmd.Args().Present() {
-				fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd.Args().First())
+			if !cmd.Args().Present() {
+				return cli.ShowAppHelp(cmd)
 			}
-			_ = cli.ShowAppHelp(cmd)
-			return cli.Exit("", 2)
+			if err := cli.ShowAppHelp(cmd); err != nil {
+				return fmt.Errorf("show help: %w", err)
+			}
+			return cli.Exit(fmt.Sprintf("unknown command %q", cmd.Args().First()), 2)
 		},
 	}
 }
@@ -63,8 +67,7 @@ func listCommand() *cli.Command {
 		Usage: "List DB artifacts in the local store",
 		Action: func(_ context.Context, cmd *cli.Command) error {
 			if cmd.Args().Present() {
-				fmt.Fprintf(os.Stderr, "list: unexpected arguments: %v\n", cmd.Args().Slice())
-				return cli.Exit("", 2)
+				return cli.Exit(fmt.Sprintf("list: unexpected arguments: %v", cmd.Args().Slice()), 2)
 			}
 			if err := runList(newLogger(cmd)); err != nil {
 				return cli.Exit("error: "+err.Error(), 1)

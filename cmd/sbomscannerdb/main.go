@@ -2,28 +2,40 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/urfave/cli/v3"
 )
 
 func main() {
 	os.Exit(run())
 }
 
+// run executes the CLI and maps its errors to exit codes:
+// 0 = success, 1 = runtime error, 2 = usage error.
+// The root command's no-op ExitErrHandler guarantees every error
+// returns here instead of exiting inside Run.
 func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Runtime errors self-exit via cli.Exit inside each command's Action,
-	// so any error surfacing here is a flag/argument-parse or usage error.
-	// Print it (when non-empty) and map it to exit 2.
-	if err := rootCommand().Run(ctx, os.Args); err != nil {
+	err := rootCommand().Run(ctx, os.Args)
+	if err == nil {
+		return 0
+	}
+
+	var exitCoder cli.ExitCoder
+	if errors.As(err, &exitCoder) {
 		if msg := err.Error(); msg != "" {
 			fmt.Fprintln(os.Stderr, msg)
 		}
-		return 2
+		return exitCoder.ExitCode()
 	}
-	return 0
+
+	// Parse errors are already printed by the framework with the usage text.
+	return 2
 }
