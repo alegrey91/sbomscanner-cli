@@ -32,8 +32,11 @@ func runBuild(ctx context.Context, ref string, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("open local store: %w", err)
 	}
-	files := []string{datafeed.KEVFileName, datafeed.EPSSFileName}
-	artifact, err := oci.NewBuilder(store, logger).Build(ctx, ref, dataDir, files)
+	layers := []oci.Layer{
+		{Name: "kev", FileName: datafeed.KEVFileName, MediaType: oci.LayerMediaTypeKEV},
+		{Name: "epss", FileName: datafeed.EPSSFileName, MediaType: oci.LayerMediaTypeEPSS},
+	}
+	artifact, err := oci.NewBuilder(store, logger).Build(ctx, ref, dataDir, layers)
 	if err != nil {
 		return fmt.Errorf("build artifact: %w", err)
 	}
@@ -77,12 +80,14 @@ func runPush(ctx context.Context, ref string, config oci.Config, logger *slog.Lo
 	return nil
 }
 
-// runPull fetches the artifact and writes its bundle to the current directory.
+// runPull fetches the artifact and writes its data files to the current directory.
 func runPull(ctx context.Context, ref string, config oci.Config, logger *slog.Logger) error {
-	dst, err := oci.NewRemote(config, logger).Pull(ctx, ref, ".")
+	paths, err := oci.NewRemote(config, logger).Pull(ctx, ref, ".")
 	if err != nil {
 		return fmt.Errorf("pull artifact: %w", err)
 	}
-	fmt.Fprintf(os.Stdout, "pulled %s from %s\n", dst, ref)
+	for _, dst := range paths {
+		fmt.Fprintf(os.Stdout, "pulled %s from %s\n", dst, ref)
+	}
 	return nil
 }

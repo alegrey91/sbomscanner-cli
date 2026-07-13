@@ -1,6 +1,8 @@
 package oci
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -95,52 +97,61 @@ func (remote *Remote) Push(ctx context.Context, store *Store, ref string) (Artif
 	}, nil
 }
 
-// Pull fetches the DB artifact at the given tag reference
-// and writes its tar.gz layer to outDir/BundleFileName.
-// It returns the written file path.
-func (remote *Remote) Pull(ctx context.Context, ref, outDir string) (string, error) {
+// Pull fetches the DB artifact at the given tag reference,
+// extracts each data layer (a tar.gz), and writes the contained files
+// (e.g. known_exploited_vulnerabilities.json, epss_scores.csv) into outDir.
+// It returns the written file paths in manifest layer order.
+func (remote *Remote) Pull(ctx context.Context, ref, outDir string) ([]string, error) {
 	srcRef, err := parseTagReference(ref)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	repo, err := remote.newRepository(srcRef)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	layerDesc, err := remote.resolveBundleLayer(ctx, repo, srcRef.Reference)
+	layerDescs, err := remote.resolveDataLayers(ctx, repo, srcRef.Reference)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	remote.logger.InfoContext(ctx, "pulling bundle layer", "ref", srcRef.String(), "digest", layerDesc.Digest, "bytes", layerDesc.Size)
 
-	dst := filepath.Join(outDir, BundleFileName)
-	if err := fetchBlobToFile(ctx, repo, layerDesc, dst); err != nil {
-		return "", err
+	var paths []string
+	for _, layerDesc := range layerDescs {
+		remote.logger.InfoContext(ctx, "pulling data layer", "ref", srcRef.String(), "layer", layerDesc.Annotations[ocispec.AnnotationTitle], "digest", layerDesc.Digest, "bytes", layerDesc.Size)
+		extracted, err := fetchAndExtractLayer(ctx, repo, layerDesc, outDir)
+		if err != nil {
+			return nil, err
+		}
+		paths = append(paths, extracted...)
 	}
-	return dst, nil
+	return paths, nil
 }
 
-// resolveBundleLayer fetches the manifest at tag
-// and returns the descriptor of the DB bundle layer, located by media type.
-func (remote *Remote) resolveBundleLayer(ctx context.Context, repo *orasremote.Repository, tag string) (ocispec.Descriptor, error) {
+// resolveDataLayers fetches the manifest at tag
+// and returns the descriptors of the DB data layers, located by media type.
+func (remote *Remote) resolveDataLayers(ctx context.Context, repo *orasremote.Repository, tag string) ([]ocispec.Descriptor, error) {
 	manifestDesc, manifestBytes, err := oras.FetchBytes(ctx, repo, tag, oras.DefaultFetchBytesOptions)
 	if err != nil {
-		return ocispec.Descriptor{}, fmt.Errorf("fetch manifest: %w", err)
+		return nil, fmt.Errorf("fetch manifest: %w", err)
 	}
 
 	var manifest ocispec.Manifest
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
-		return ocispec.Descriptor{}, fmt.Errorf("parse manifest %s: %w", manifestDesc.Digest, err)
+		return nil, fmt.Errorf("parse manifest %s: %w", manifestDesc.Digest, err)
 	}
 
+	var layers []ocispec.Descriptor
 	for _, layer := range manifest.Layers {
-		if layer.MediaType == LayerMediaType {
-			return layer, nil
+		if isDataLayerMediaType(layer.MediaType) {
+			layers = append(layers, layer)
 		}
 	}
-	return ocispec.Descriptor{}, fmt.Errorf("no layer with media type %s in manifest %s", LayerMediaType, manifestDesc.Digest)
+	if len(layers) == 0 {
+		return nil, fmt.Errorf("no DB data layers in manifest %s", manifestDesc.Digest)
+	}
+	return layers, nil
 }
 
 // newRepository builds an authenticated remote repository client for ref.
@@ -162,28 +173,78 @@ func (remote *Remote) newRepository(ref registry.Reference) (*orasremote.Reposit
 	return repo, nil
 }
 
-// fetchBlobToFile streams the blob described by desc into dst.
-func fetchBlobToFile(ctx context.Context, repo *orasremote.Repository, desc ocispec.Descriptor, dst string) error {
+// maxDecompressedLayerSize bounds how much a data layer may decompress to (1 GiB).
+// The real feeds are tens of MB; the cap only guards against a
+// decompression bomb served by a hostile registry.
+const maxDecompressedLayerSize = 1 << 30
+
+// fetchAndExtractLayer streams the tar.gz blob described by desc
+// and writes each regular file it contains into outDir under its base name.
+// It returns the written file paths.
+func fetchAndExtractLayer(ctx context.Context, repo *orasremote.Repository, desc ocispec.Descriptor, outDir string) ([]string, error) {
 	readCloser, err := repo.Blobs().Fetch(ctx, desc)
 	if err != nil {
-		return fmt.Errorf("fetch blob %s: %w", desc.Digest, err)
+		return nil, fmt.Errorf("fetch blob %s: %w", desc.Digest, err)
 	}
 	defer readCloser.Close()
 
+	gzipReader, err := gzip.NewReader(io.LimitReader(readCloser, desc.Size))
+	if err != nil {
+		return nil, fmt.Errorf("decompress blob %s: %w", desc.Digest, err)
+	}
+	tarReader := tar.NewReader(gzipReader)
+
+	var paths []string
+	remaining := int64(maxDecompressedLayerSize)
+	for {
+		header, err := tarReader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read tar in blob %s: %w", desc.Digest, err)
+		}
+		if header.Typeflag != tar.TypeReg {
+			continue
+		}
+
+		// Base strips any path components a hostile archive could smuggle in.
+		dst := filepath.Join(outDir, filepath.Base(header.Name))
+		written, err := writeFileCapped(dst, tarReader, remaining)
+		if err != nil {
+			return nil, fmt.Errorf("extract %s from blob %s: %w", header.Name, desc.Digest, err)
+		}
+		remaining -= written
+		paths = append(paths, dst)
+	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("no files in layer %s", desc.Digest)
+	}
+	return paths, nil
+}
+
+// writeFileCapped writes at most limit bytes from reader into dst,
+// failing (and removing dst) if reader holds more.
+func writeFileCapped(dst string, reader io.Reader, limit int64) (int64, error) {
 	outFile, err := os.Create(dst)
 	if err != nil {
-		return fmt.Errorf("create %s: %w", dst, err)
+		return 0, fmt.Errorf("create %s: %w", dst, err)
 	}
 	defer outFile.Close()
 
-	if _, err := io.CopyN(outFile, readCloser, desc.Size); err != nil {
+	written, err := io.Copy(outFile, io.LimitReader(reader, limit+1))
+	if err != nil {
 		_ = os.Remove(dst)
-		return fmt.Errorf("write %s: %w", dst, err)
+		return 0, fmt.Errorf("write %s: %w", dst, err)
+	}
+	if written > limit {
+		_ = os.Remove(dst)
+		return 0, fmt.Errorf("decompresses beyond %d bytes", maxDecompressedLayerSize)
 	}
 	if err := outFile.Close(); err != nil {
-		return fmt.Errorf("close %s: %w", dst, err)
+		return 0, fmt.Errorf("close %s: %w", dst, err)
 	}
-	return nil
+	return written, nil
 }
 
 // parseTagReference parses ref and requires it to be a tag (not digest) reference.

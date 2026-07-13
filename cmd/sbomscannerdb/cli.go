@@ -94,7 +94,7 @@ func pushCommand() *cli.Command {
 func pullCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "pull",
-		Usage:     "Pull the artifact from a registry and write " + oci.BundleFileName + " to the current directory",
+		Usage:     "Pull the artifact from a registry and write the KEV/EPSS data files to the current directory",
 		ArgsUsage: refArgsUsage,
 		Arguments: referenceArguments(),
 		Flags:     registryFlags(),

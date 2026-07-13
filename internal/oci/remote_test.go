@@ -57,24 +57,27 @@ func TestPushPull_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 	remote := NewRemote(Config{PlainHTTP: true}, slog.New(slog.DiscardHandler))
 
-	dataDir, files := writeTestData(t)
+	dataDir, layers := writeTestData(t)
 	store := NewStore(filepath.Join(t.TempDir(), "store"), slog.New(slog.DiscardHandler))
 	ref := registry + "/kubewarden/sbomscanner/sbomscannerdb:latest"
 
-	built, err := NewBuilder(store, slog.New(slog.DiscardHandler)).Build(ctx, ref, dataDir, files)
+	built, err := NewBuilder(store, slog.New(slog.DiscardHandler)).Build(ctx, ref, dataDir, layers)
 	require.NoError(t, err)
 	pushed, err := remote.Push(ctx, store, ref)
 	require.NoError(t, err)
 	assert.Equal(t, built.Digest, pushed.Digest)
 
 	outDir := t.TempDir()
-	dst, err := remote.Pull(ctx, ref, outDir)
+	paths, err := remote.Pull(ctx, ref, outDir)
 	require.NoError(t, err)
-	assert.Equal(t, BundleFileName, filepath.Base(dst))
+	require.Len(t, paths, len(layers))
 
-	got := readTarGz(t, dst)
-	for _, name := range files {
-		assert.Equal(t, "data for "+name, got[name])
+	// Each feed comes back as its own decompressed file, named by its layer title.
+	for i, layer := range layers {
+		assert.Equal(t, layer.FileName, filepath.Base(paths[i]))
+		data, err := os.ReadFile(paths[i])
+		require.NoError(t, err)
+		assert.Equal(t, "data for "+layer.FileName, string(data))
 	}
 
 	// Re-push is idempotent: all content is already present remotely.
@@ -94,11 +97,11 @@ func TestPush_FailsForUnbuiltRef(t *testing.T) {
 func TestPush_FailsWithoutDockerConfig(t *testing.T) {
 	t.Setenv("DOCKER_CONFIG", filepath.Join(t.TempDir(), "does-not-exist"))
 
-	dataDir, files := writeTestData(t)
+	dataDir, layers := writeTestData(t)
 	store := NewStore(filepath.Join(t.TempDir(), "store"), slog.New(slog.DiscardHandler))
 	ctx := context.Background()
 
-	_, err := NewBuilder(store, slog.New(slog.DiscardHandler)).Build(ctx, testRef, dataDir, files)
+	_, err := NewBuilder(store, slog.New(slog.DiscardHandler)).Build(ctx, testRef, dataDir, layers)
 	require.NoError(t, err)
 
 	_, err = NewRemote(Config{PlainHTTP: true}, slog.New(slog.DiscardHandler)).Push(ctx, store, testRef)
