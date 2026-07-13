@@ -1,8 +1,8 @@
-# sbomscanner-cli
+# sbomscannerdb
 
 ## Introduction
 
-`sbomscanner-cli` builds and distributes the vulnerability-prioritization data
+`sbomscannerdb` builds and distributes the vulnerability-prioritization data
 used by [sbomscanner](https://github.com/kubewarden/sbomscanner) as an **OCI artifact**.
 It packages the **KEV** and **EPSS** datasets into a single artifact
 (`sbomscanner-db`) and pushes it to an OCI registry of your choice. sbomscanner
@@ -39,91 +39,158 @@ list that focuses remediation effort where it reduces the most risk.
 
 ## Commands
 
-The CLI exposes three commands, backed only by Go's standard `flag` package
-(no cobra):
+The CLI follows a docker-like workflow: artifacts are built into a local
+store (an OCI image layout under the user cache directory, e.g.
+`$XDG_CACHE_HOME/sbomscannerdb` on Linux or `~/Library/Caches/sbomscannerdb`
+on macOS), tagged by reference, and pushed from there.
 
 | Command | Description |
 | ------- | ----------- |
-| `get`   | Downloads the KEV and/or EPSS data files into `~/.sbomscanner/data/`. |
-| `pack`  | Bundles both data files into a local OCI artifact under `~/.sbomscanner/layout/`. |
-| `push`  | Publishes a packed artifact from the local layout to a remote OCI registry. |
+| `build` | Downloads the KEV and EPSS data files and builds them into an OCI artifact in the local store, tagged with the given reference. |
+| `list`  | Lists the artifacts in the local store. |
+| `push`  | Pushes a previously built artifact from the local store to its registry. |
+| `pull`  | Pulls the artifact from a registry and writes the `sbomscanner-db.tar.gz` bundle to the current directory. |
 
-### `get`
+`build`, `push`, and `pull` take a single `<registry>/<repo>:<tag>` reference
+(e.g. `ghcr.io/kubewarden/sbomscanner/sbomscannerdb:latest`). `push` and
+`pull` share these flags:
 
-Downloads the raw datasets and stores them under `~/.sbomscanner/data/`. The
-files are not versioned upstream, so every run re-downloads and overwrites the
-previous copies (force download is implicit). A progress bar is shown while
-downloading.
+- `--skip-tls-verify`: skip TLS certificate verification (e.g. for a registry
+  with a self-signed certificate).
+- `--plain-http`: use HTTP instead of HTTPS (useful for local registries).
 
-- `get all`: download **both** files sequentially (KEV first, then EPSS).
-- `get kev`: download only the KEV catalog.
-- `get epss`: download only the EPSS scores (the source is gzipped and is
-  decompressed before being stored).
+### `build`
 
-Running `get` with no subcommand prints usage and exits `2`.
-
-### `pack`
-
-Loads both files from `~/.sbomscanner/data/` and assembles them into a single
-OCI artifact in the local OCI layout at `~/.sbomscanner/layout/`. Both files
-must be present or the command fails. The artifact is named
-`sbomscanner-db_<hash>`, where `<hash>` is a 12-character SHA-256 derived from
-the **content** of the KEV and EPSS files, and a `latest` tag is written
-alongside it.
-
-Because the tag comes from the file content, re-packing unchanged
-files is **reproducible**: the same input always produces a byte-identical,
-same-named artifact. If the data hasn't changed since the last run, the pack is
-effectively a no-op.
+Downloads the latest KEV catalog and EPSS scores (the EPSS source is gzipped
+and decompressed on the fly), bundles both data files into a single
+`sbomscanner-db.tar.gz`, packs it as an OCI artifact, and tags it with the
+given reference in the local store. Rebuilding the same reference re-tags it;
+unchanged data is a no-op thanks to content addressing.
 
 The artifact uses these media / artifact types:
 
 - Artifact: `application/vnd.sbomscanner.db.v1+json`
-- KEV layer: `application/vnd.sbomscanner.kev.v1+csv`
-- EPSS layer: `application/vnd.sbomscanner.epss.v1+csv`
+- Layer: `application/vnd.sbomscanner.db.layer.v1.tar+gzip`
+
+### `list`
+
+Prints the tagged artifacts in the local store with their digest and
+manifest size.
 
 ### `push`
 
-Publishes a packed artifact from the local layout to a registry, given a
-`<registry>/<repo>:<tag>` reference. Authentication uses your existing Docker
-credentials at `~/.docker/config.json` (or `$DOCKER_CONFIG/config.json`); if no
-config file exists the command exits with an error. The artifact must already
-exist in the local layout for the given tag.
+Publishes a previously built artifact from the local store to the registry
+identified by its reference. Authentication uses your existing Docker
+credentials at `~/.docker/config.json` (or `$DOCKER_CONFIG/config.json`); if
+no config file exists the command exits with an error.
 
-- `--skip-tls-verify`: skip TLS certificate verification (e.g. for a registry
-  with a self-signed certificate).
+### `pull`
+
+Fetches the artifact manifest from the registry, locates the database layer by
+media type, and writes it as `sbomscanner-db.tar.gz` to the current directory.
+The bundle contains:
+
+- `known_exploited_vulnerabilities.json` (KEV)
+- `epss_scores.csv` (EPSS)
 
 ## Flow
 
-The three commands form a simple pipeline. Run them in order to publish a fresh
-database:
-
 ```
-  get                pack                     push
-  ────▶  data files  ────▶  OCI artifact      ────▶  registry
-         on disk            in local layout
+  build:  KEV/EPSS feeds ──▶ sbomscanner-db.tar.gz ──▶ local store (tagged)
+  push:   local store ──▶ registry
+  pull:   registry ──▶ ./sbomscanner-db.tar.gz
 ```
-
-1. **Pull**: `get all` downloads the latest KEV and EPSS files into
-   `~/.sbomscanner/data/`.
-2. **Pack**: `pack` bundles those files into an OCI artifact in the local OCI
-   layout at `~/.sbomscanner/layout/`.
-3. **Push**: `push <registry>/<repo>:<tag>` uploads the artifact to the OCI
-   registry of your choice.
 
 Once the artifact is in a registry, configure sbomscanner to point at that
 `<registry>/<repo>:<tag>`. sbomscanner will then pull the `sbomscanner-db`
 artifact when it needs the KEV/EPSS data for CVE prioritization.
 
+## Bundle contract
+
+The artifact is an OCI 1.1 image manifest with:
+
+- artifactType: `application/vnd.sbomscanner.db.v1+json`
+- a single layer of media type `application/vnd.sbomscanner.db.layer.v1.tar+gzip`
+
+The layer is a tar.gz (`sbomscanner-db.tar.gz`) containing exactly two files,
+each kept verbatim in its upstream native format — no re-encoding is applied,
+so the schemas below are owned by CISA and FIRST respectively:
+
+### `known_exploited_vulnerabilities.json` (KEV)
+
+The [CISA KEV catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
+JSON feed. Top-level object with catalog metadata and a `vulnerabilities`
+array:
+
+```json
+{
+  "title": "CISA Catalog of Known Exploited Vulnerabilities",
+  "catalogVersion": "2026.07.12",
+  "dateReleased": "2026-07-12T00:00:00.0000Z",
+  "count": 1,
+  "vulnerabilities": [
+    {
+      "cveID": "CVE-2021-44228",
+      "vendorProject": "Apache",
+      "product": "Log4j2",
+      "vulnerabilityName": "Apache Log4j2 Remote Code Execution Vulnerability",
+      "dateAdded": "2021-12-10",
+      "shortDescription": "...",
+      "requiredAction": "Apply updates per vendor instructions.",
+      "dueDate": "2021-12-24",
+      "knownRansomwareCampaignUse": "Known",
+      "notes": "",
+      "cwes": ["CWE-20", "CWE-400", "CWE-502"]
+    }
+  ]
+}
+```
+
+Typical consumption: build a set keyed by `cveID` for O(1) "is this CVE
+actively exploited?" lookups.
+
+### `epss_scores.csv` (EPSS)
+
+The [FIRST EPSS](https://www.first.org/epss/) daily bulk feed, decompressed.
+One row per published CVE (~300k rows, ~10 MB) with the score as of the day
+the artifact was built:
+
+```csv
+#model_version:v2026.06.15,score_date:2026-07-12T12:00:00Z
+cve,epss,percentile
+CVE-2021-44228,0.97565,0.99992
+```
+
+- Lines starting with `#` are metadata (model version and score date) and
+  should be skipped when parsing rows.
+- `epss` is the probability (0–1) of exploitation in the next 30 days;
+  `percentile` is the CVE's rank relative to all scored CVEs.
+
+Typical consumption: stream the CSV into a map keyed by `cve` for O(1) score
+lookups. The whole dataset fits comfortably in memory (~50 MB for both files
+parsed).
+
 ### Example
 
+
 ```sh
-# 1. Pull the latest KEV + EPSS data
-sbomscanner-cli get all
+# Build the database artifact into the local store
+sbomscannerdb build ghcr.io/kubewarden/sbomscanner/sbomscannerdb:latest
 
-# 2. Pack them into a local OCI artifact
-sbomscanner-cli pack
+# Inspect the local store
+sbomscannerdb list
 
-# 3. Push to your registry
-sbomscanner-cli push registry.example.com/sbomscanner-db:latest
+# Publish it
+sbomscannerdb push ghcr.io/kubewarden/sbomscanner/sbomscannerdb:latest
+
+# Retrieve it later
+sbomscannerdb pull ghcr.io/kubewarden/sbomscanner/sbomscannerdb:latest
+```
+
+## Development
+
+```sh
+make build        # build ./bin/sbomscannerdb
+make lint         # run golangci-lint
+make test         # run tests
 ```
