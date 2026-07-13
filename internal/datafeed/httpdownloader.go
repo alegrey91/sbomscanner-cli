@@ -58,7 +58,7 @@ func NewHTTPDownloader() *HTTPDownloader {
 // Gzipped payloads are detected by their magic bytes and decompressed on the fly.
 //
 // It returns the final on-disk size (post-decompression for gzipped payloads).
-func (downloader *HTTPDownloader) Download(ctx context.Context, url, dst string) (int64, error) {
+func (d *HTTPDownloader) Download(ctx context.Context, url, dst string) (int64, error) {
 	tmp := tmpPath(dst)
 
 	// Best-effort cleanup: if we return without a successful rename, drop the partial.
@@ -70,7 +70,7 @@ func (downloader *HTTPDownloader) Download(ctx context.Context, url, dst string)
 		}
 	}()
 
-	resp, err := downloader.doRequest(ctx, url)
+	resp, err := d.doRequest(ctx, url)
 	if err != nil {
 		return 0, err
 	}
@@ -95,14 +95,14 @@ func (downloader *HTTPDownloader) Download(ctx context.Context, url, dst string)
 }
 
 // doRequest issues the GET and validates the response status.
-func (downloader *HTTPDownloader) doRequest(ctx context.Context, url string) (*http.Response, error) {
+func (d *HTTPDownloader) doRequest(ctx context.Context, url string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("User-Agent", userAgent)
 
-	resp, err := downloader.client.Do(req)
+	resp, err := d.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)
 	}
